@@ -1,5 +1,7 @@
 import duckdb
 import os
+import zipfile
+import shutil
 
 # Connect to the existing DuckDB database
 conn = duckdb.connect('claims.duckdb')
@@ -12,6 +14,40 @@ if not table_exists:
     conn.close()
     exit(1)
 
+# Define paths
+bene_folder = './data/bene'
+zip_file_path = os.path.join(bene_folder, 'bene.zip')
+
+# Unzip the bene.zip file if it exists
+if os.path.exists(zip_file_path):
+    print(f"Found zip file: {zip_file_path}")
+    print("Extracting CSV files...")
+    
+    # Create a temporary extraction directory
+    temp_extract_dir = os.path.join(bene_folder, 'temp_extract')
+    if os.path.exists(temp_extract_dir):
+        shutil.rmtree(temp_extract_dir)
+    os.makedirs(temp_extract_dir, exist_ok=True)
+    
+    # Extract all files from the zip
+    with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+        zip_ref.extractall(temp_extract_dir)
+    
+    # Move CSV files to the bene folder
+    for file in os.listdir(temp_extract_dir):
+        if file.endswith('.csv'):
+            source_path = os.path.join(temp_extract_dir, file)
+            dest_path = os.path.join(bene_folder, file)
+            shutil.move(source_path, dest_path)
+            print(f"Extracted: {file}")
+    
+    # Clean up the temporary directory
+    shutil.rmtree(temp_extract_dir)
+    print("Extraction complete")
+else:
+    print(f"Warning: Zip file not found at {zip_file_path}")
+    print("Proceeding with existing CSV files in the directory")
+
 # Import all beneficiary CSV files using duckdb.read_csv()
 try:
     # Clear existing data
@@ -19,9 +55,12 @@ try:
     print("Existing data cleared from beneficiary_summary table")
 
     # Get all CSV files in the bene folder
-    #bene_folder = '/home/cal/Projects/claims/data/bene'
-    bene_folder = './data/bene'    
     csv_files = [f for f in os.listdir(bene_folder) if f.endswith('.csv')]
+    
+    if not csv_files:
+        print("No CSV files found in the bene folder")
+    else:
+        print(f"Found {len(csv_files)} CSV files to import")
 
     for csv_file in csv_files:
         file_path = os.path.join(bene_folder, csv_file)
