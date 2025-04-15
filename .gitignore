@@ -42,7 +42,7 @@ ENV/
 *.sqlite
 *.sqlite3
 # Uncomment the next line if you don't want to track your DuckDB file
-# *.duckdb
+*.duckdb
 
 # Data files
 # Uncomment if you don't want to track large data files
