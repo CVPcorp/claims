@@ -23,7 +23,7 @@ if __name__ == "__main__":
         "chart.py",
         "icd_codes_import.py",
         "icd_description_import.py",
-        "plotly_dashboard.py"
+        "plotly_dashboard_ai.py"
     ]
 
     for script in scripts:
