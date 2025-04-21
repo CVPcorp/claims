@@ -56,28 +56,26 @@ light_text_color = '#333'
 init_launch = 0
 icd_top_level_grp_cnt = 0
 init_min = 0
-init_max = 5
+init_max = 0.1 # Adjusted for fractional rate (0-1)
             
 def fetch_data(top_n=None, sqlstmt=None):
         query = """
-        SELECT 
+        SELECT
             s.state_abbr as State,
             SUM(rr.readmissions) as "Total Readmissions",
             SUM(rr.total_admissions) as "Total Admissions"
-        FROM 
+        FROM
             (
             WITH valid_claims AS (
-                SELECT 
+                SELECT
                     ic.CLM_ID,
                     ic.DESYNPUF_ID,
                     ic.CLM_ADMSN_DT,
-                    EXTRACT(YEAR FROM ic.CLM_ADMSN_DT) AS year,
                     LAG(ic.NCH_BENE_DSCHRG_DT) OVER (PARTITION BY ic.DESYNPUF_ID ORDER BY ic.CLM_ADMSN_DT) AS prev_discharge_date
-                FROM """ + " ( " + f"{sqlstmt}" + " ) as ic " + """ 
+                FROM """ + " ( " + f"{sqlstmt}" + " ) as ic " + """
                 WHERE EXTRACT(YEAR FROM ic.CLM_ADMSN_DT) IN (2008, 2009, 2010)
             )
             SELECT
-                vc.year,
                 bs.SP_STATE_CODE,
                 COUNT(DISTINCT acr.CLM_ID) AS readmissions,
                 COUNT(DISTINCT vc.CLM_ID) AS total_admissions
@@ -90,24 +88,20 @@ def fetch_data(top_n=None, sqlstmt=None):
             WHERE
                 (vc.CLM_ADMSN_DT - vc.prev_discharge_date > 30 OR vc.prev_discharge_date IS NULL)
             GROUP BY
-                vc.year, bs.SP_STATE_CODE
+                bs.SP_STATE_CODE
             ) rr
-        JOIN 
+        JOIN
             state s ON rr.SP_STATE_CODE = s.sp_state_code
-        GROUP BY 
+        GROUP BY
             s.state_abbr
         """
 
         result = conn.execute(query).fetchdf()
 
-        # Aggregate data by state
-        result = result.groupby('State').agg({
-            'Total Readmissions': 'sum',
-            'Total Admissions': 'sum'
-        }).reset_index()
-
-        # Calculate Readmission Rate
-        result['Readmission Rate'] = round((result['Total Readmissions'] * 100.0 / result['Total Admissions']), 2)
+        # Calculate Readmission Rate (Removed redundant Pandas groupby)
+        # Calculate Readmission Rate as a fraction (0 to 1) for consistency
+        # Calculate Readmission Rate as a fraction (0 to 1) - removed rounding
+        result['Readmission Rate'] = result['Total Readmissions'] / result['Total Admissions']
 
         # Sort and limit if needed
         result = result.sort_values('Readmission Rate', ascending=False)
@@ -127,7 +121,7 @@ def create_column_chart(data):
     fig.update_layout(
         title_x=0.5,
         xaxis_title='State',
-        yaxis_title='Readmission Rate (%)',
+        yaxis_title='Readmission Rate', # Removed (%) as rate is now fractional
         xaxis=dict(
           showgrid=True,  
           gridcolor='#c8c8c8 ', 
@@ -154,7 +148,7 @@ def create_choropleth_map(data):
         color_continuous_scale="Cividis",
         range_color=[min_value, max_value],
         title='US Readmission Rates by State',
-        labels={'Readmission Rate': 'Readmission Rate (%)'}
+        labels={'Readmission Rate': 'Readmission Rate'} # Removed (%) as rate is now fractional
     )
     fig.update_layout(
         geo_scope='usa',
@@ -304,8 +298,14 @@ def update_data(n_clicks,user_input):
     if n_clicks == 0 or init_launch == 0 or (
                     ctx.triggered_id == "update-btn" and 
                     (user_input is None or user_input.strip() == "")):
-        filtered_data = fetch_data(sqlstmt=inpatient_claims_source)
-        top_10_data = fetch_data(top_n=10,sqlstmt=inpatient_claims_source)
+        # Fetch data once for consistency
+        all_states_data = fetch_data(sqlstmt=inpatient_claims_source)
+
+        # Derive filtered_data and top_10_data from the single fetch
+        filtered_data = all_states_data.copy()
+        top_10_data = all_states_data.sort_values('Readmission Rate', ascending=False).head(10).copy()
+
+        # Debugging prints for CT and TN data
         if init_launch == 0:
            init_launch = -1
         icdcodedf = errornoicdcodedf
@@ -330,8 +330,8 @@ def update_data(n_clicks,user_input):
              print(f"Headers: {llm_headers}")
              print(f"Data: {data}")
              response = requests.post(
-                 proxy_url + op_url, 
-                 headers=llm_headers, 
+                 proxy_url + op_url,
+                 headers=llm_headers,
                  json=data)
              print(f"Response status code: {response.status_code}")
              print(f"Response content: {response.text}")
@@ -341,8 +341,10 @@ def update_data(n_clicks,user_input):
              print(f"Error making API request: {e}")
              print(f"Response details: {response.text if 'response' in locals() else 'No response'}")
              # Return default data on error
-             filtered_data = fetch_data(sqlstmt=inpatient_claims_source)
-             top_10_data = fetch_data(top_n=10,sqlstmt=inpatient_claims_source)
+             # Fetch data once for consistency on error as well
+             all_states_data = fetch_data(sqlstmt=inpatient_claims_source)
+             filtered_data = all_states_data.copy()
+             top_10_data = all_states_data.sort_values('Readmission Rate', ascending=False).head(10).copy()
              return (
                create_choropleth_map(filtered_data),
                create_column_chart(top_10_data),
@@ -353,29 +355,33 @@ def update_data(n_clicks,user_input):
              )
          msg = result["choices"][0]["message"]["content"]
          match_found = re.search(r"\${3}(.*)\${3}",msg,re.DOTALL)
-         franklin_sql = re.sub(r"[ \t\n;]+"," ",re.sub(r'--.*',"", match_found.group(1)))          
-         where_clause_match = re.search(r"where\s+(.+)", franklin_sql, re.IGNORECASE) 
+         franklin_sql = re.sub(r"[ \t\n;]+"," ",re.sub(r'--.*',"", match_found.group(1)))
+         where_clause_match = re.search(r"where\s+(.+)", franklin_sql, re.IGNORECASE)
          where_clause = where_clause_match.group(0) if where_clause_match else "WHERE clause not found"
          icd_codes = re.findall(r"ICD10_DGNS_CODE LIKE '([A-Z]\d{1,3})%'", where_clause)
          icd_top_level_grp_cnt = len(set(icd_codes))
          icdcodequery = "SELECT icd10_cm_code, description FROM main.icd10_diag_desc as c " + where_clause.replace("ICD10_DGNS_CODE","icd10_cm_code")
-         icdcodedf = conn.execute(icdcodequery).fetchdf() 
-         if icd_top_level_grp_cnt < 10: 
+         icdcodedf = conn.execute(icdcodequery).fetchdf()
+         if icd_top_level_grp_cnt < 10:
            inpatient_claims_source = franklin_sql
            show_pop = 'False'
          else:
            show_pop = 'True'
-         filtered_data = fetch_data(sqlstmt=inpatient_claims_source)
-         top_10_data = fetch_data(top_n=10,sqlstmt=inpatient_claims_source)
-         min_value = math.floor(filtered_data['Readmission Rate'].min())    
-         max_value = math.ceil(filtered_data['Readmission Rate'].max()/5)*5
+         # Fetch data once with the AI filter applied
+         all_states_data = fetch_data(sqlstmt=inpatient_claims_source)
+         filtered_data = all_states_data.copy()
+         top_10_data = all_states_data.sort_values('Readmission Rate', ascending=False).head(10).copy()
+
+         # Update min/max based on actual fractional data range after filtering
+         min_value = filtered_data['Readmission Rate'].min()
+         max_value = filtered_data['Readmission Rate'].max()
          return (
            create_choropleth_map(filtered_data),
            create_column_chart(top_10_data),
            [{"name": i, "id": i} for i in filtered_data.columns],
            filtered_data.to_dict('records'),
            show_pop == 'True',
-           f" {franklin_sql}" 
+           f" {franklin_sql}"
          )
     return no_update  
     
